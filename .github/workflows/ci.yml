@@ -1,0 +1,56 @@
+name: CI - test & build & smoke-test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Build docker image
+        run: |
+          docker build -t devops-flask-ci:latest .
+
+      - name: Run container
+        run: |
+          docker run -d --name devops-flask-ci -p 5000:5000 devops-flask-ci:latest
+          # wait until it's ready (with retries)
+          n=0
+          until [ $n -ge 10 ]
+          do
+            status_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/health || echo "000")
+            if [ "$status_code" = "200" ]; then
+              echo "Service returned 200"
+              break
+            fi
+            n=$((n+1))
+            echo "Waiting for service... attempt $n"
+            sleep 2
+          done
+          if [ "$status_code" != "200" ]; then
+            echo "Health check failed, dumping container logs:"
+            docker logs devops-flask-ci || true
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f devops-flask-ci || true
